@@ -40,6 +40,7 @@ from koji.tasks import ServerExit, BaseTaskHandler
 from osbs.api import OSBS
 from osbs.conf import Configuration
 from osbs.exceptions import OsbsValidationException
+from osbs.utils import split_module_spec
 
 # We need kojid module which isn't proper python module and not even in
 # site-package path.
@@ -394,7 +395,8 @@ class BuildContainerTask(BaseTaskHandler):
             raise koji.BuildError("package (container)  %s is blocked for tag %s" % (name, target_info['dest_tag_name']))
 
     def runBuilds(self, src, target_info, arches, scratch=False,
-                  yum_repourls=None, branch=None, push_url=None):
+                  yum_repourls=None, branch=None, push_url=None,
+                  flatpak=False, module=None):
 
         self.logger.debug("Spawning jobs for arches: %r" % (arches))
 
@@ -407,7 +409,9 @@ class BuildContainerTask(BaseTaskHandler):
             yum_repourls=yum_repourls,
             branch=branch,
             push_url=push_url,
-            arches=arches
+            arches=arches,
+            flatpak=flatpak,
+            module=module
         )
 
         results = [self.createContainer(**kwargs)]
@@ -416,7 +420,8 @@ class BuildContainerTask(BaseTaskHandler):
         return results
 
     def createContainer(self, src=None, target_info=None, arches=None,
-                        scratch=None, yum_repourls=[], branch=None, push_url=None):
+                        scratch=None, yum_repourls=[], branch=None, push_url=None,
+                        flatpak=False, module=None):
         if not yum_repourls:
             yum_repourls = []
 
@@ -449,6 +454,10 @@ class BuildContainerTask(BaseTaskHandler):
             create_build_args['git_branch'] = branch
         if push_url:
             create_build_args['git_push_url'] = push_url
+        if flatpak:
+            create_build_args['flatpak'] = True
+        if module:
+            create_build_args['module'] = module
 
         try:
             create_method = self.osbs().create_orchestrator_build
@@ -678,7 +687,23 @@ class BuildContainerTask(BaseTaskHandler):
         build_tag = target_info['build_tag']
         archlist = self.getArchList(build_tag)
 
-        data, expected_nvr = self.checkLabels(src)
+        flatpak = opts.get('flatpak', True)
+        if flatpak:
+            module = opts.get('module', None)
+            if not module:
+                raise BuildError("Module must be specifed for a Flatpak build")
+
+            module_name, module_stream, module_version = split_module_spec(module)
+
+            data = {
+                'name': module_name,
+                'version': module_stream
+            }
+
+            if module_version is not None:
+                data['release'] = module_version
+        else:
+            data, expected_nvr = self.checkLabels(src)
         admin_opts = self._get_admin_opts(opts)
         data.update(admin_opts)
 
@@ -687,11 +712,15 @@ class BuildContainerTask(BaseTaskHandler):
             self.check_whitelist(data[LABEL_DATA_MAP['COMPONENT']], target_info)
 
         try:
-            auto_release = (data[LABEL_DATA_MAP['RELEASE']] ==
-                            LABEL_DEFAULT_VALUES['RELEASE'])
-            if auto_release:
-                # Do not expose default release value
-                del data[LABEL_DATA_MAP['RELEASE']]
+            # Flatpak builds append .<N> to the release generated from module version
+            if flatpak:
+                auto_release = True
+            else:
+                auto_release = (data[LABEL_DATA_MAP['RELEASE']] ==
+                                LABEL_DEFAULT_VALUES['RELEASE'])
+                if auto_release:
+                    # Do not expose default release value
+                    del data[LABEL_DATA_MAP['RELEASE']]
 
             self.extra_information = {"src": src, "data": data,
                                       "target": target}
@@ -714,6 +743,8 @@ class BuildContainerTask(BaseTaskHandler):
                                      yum_repourls=opts.get('yum_repourls', None),
                                      branch=opts.get('git_branch', None),
                                      push_url=opts.get('push_url', None),
+                                     flatpak=flatpak,
+                                     module=opts.get('module', None),
                                      )
             all_repositories = []
             all_koji_builds = []

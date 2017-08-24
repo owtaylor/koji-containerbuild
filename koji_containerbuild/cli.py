@@ -62,13 +62,19 @@ def print_task_result(task_id, result, weburl):
     print_result(result)
 
 
-def handle_container_build(options, session, args):
+def handle_build(options, session, args, flatpak):
     "Build a container"
-    usage = _("usage: %prog container-build [options] target <scm url or "
-              "archive path>")
+    if flatpak:
+        usage = _("usage: %prog flatpak-build [options] target <scm url>")
+    else:
+        usage = _("usage: %prog container-build [options] target <scm url or "
+                  "archive path>")
     usage += _("\n(Specify the --help global option for a list of other help "
                "options)")
     parser = OptionParser(usage=usage)
+    if flatpak:
+        parser.add_option("-m", "--module", metavar="NAME:STREAM[:VERSION]",
+                          help="module to build against")
     parser.add_option("--scratch", action="store_true",
                       help=_("Perform a scratch build"))
     parser.add_option("--wait", action="store_true",
@@ -79,8 +85,9 @@ def handle_container_build(options, session, args):
     parser.add_option("--quiet", action="store_true",
                       help=_("Do not print the task information"),
                       default=options.quiet)
-    parser.add_option("--noprogress", action="store_true",
-                      help=_("Do not display progress of the upload"))
+    if not flatpak:
+        parser.add_option("--noprogress", action="store_true",
+                          help=_("Do not display progress of the upload"))
     parser.add_option("--background", action="store_true",
                       help=_("Run the build at a lower priority"))
     parser.add_option("--epoch",
@@ -95,8 +102,9 @@ def handle_container_build(options, session, args):
     parser.add_option("--channel-override",
                       help=_("Use a non-standard channel [default: %default]"),
                       default=DEFAULT_CHANNEL)
-    parser.add_option("--release",
-                      help=_("Set release label"))
+    if not flatpak:
+        parser.add_option("--release",
+                          help=_("Set release label"))
     (build_opts, args) = parser.parse_args(args)
     if len(args) != 2:
         parser.error(_("Exactly two arguments (a build target and a SCM URL "
@@ -135,6 +143,14 @@ def handle_container_build(options, session, args):
             parser.error(_("Destination tag %s is locked" % dest_tag['name']))
     source = args[1]
     opts = {}
+    if flatpak:
+        if not build_opts.module:
+            parser.error(_("module must be specified"))
+        if not build_opts.git_branch:
+            parser.error(_("git-branch must be specified"))
+
+        opts['flatpak'] = True
+        opts['module'] = build_opts.module
     for key in ('scratch', 'epoch', 'yum_repourls', 'git_branch'):
         val = getattr(build_opts, key)
         if val is not None:
@@ -145,6 +161,8 @@ def handle_container_build(options, session, args):
         priority = 5
     # try to check that source is an archive
     if '://' not in source:
+        if flatpak:
+            parser.error(_("scm URL does not look like an URL to a source repository"))
         # treat source as an archive and upload it
         if not build_opts.quiet:
             print "Uploading archive: %s" % source
@@ -173,3 +191,9 @@ def handle_container_build(options, session, args):
         return rv
     else:
         return
+
+def handle_container_build(options, session, args):
+    return handle_build(options, session, args, flatpak=False)
+
+def handle_flatpak_build(options, session, args):
+    return handle_build(options, session, args, flatpak=True)
